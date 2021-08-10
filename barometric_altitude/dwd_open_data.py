@@ -11,8 +11,11 @@ station_re = re.compile(
     "(?P<lon>[1]?[0-9]\.[0-9]{4})\s+(?P<station_name>[A-ZÄ-Ü].*\S)\s+"
     "(?P<state>[A-Z].*\S)"
 )
-hourly_file_re = re.compile(
+pressure_hourly_file_re = re.compile(
     "(?P<file_name>stundenwerte_P0_(?P<station_id>[0-9]{5})_(?:akt|(?:[0-9]{8}_[0-9]{8}_hist)).zip)</a>"
+)
+temperature_hourly_file_re = re.compile(
+    "(?P<file_name>stundenwerte_TU_(?P<station_id>[0-9]{5})_(?:akt|(?:[0-9]{8}_[0-9]{8}_hist)).zip)</a>"
 )
 ten_minutes_file_re = re.compile(
     "(?P<file_name>10minutenwerte_TU_(?P<station_id>[0-9]{5})_(?:now|akt|(?:[0-9]{8}_[0-9]{8}_hist)).zip)</a>"
@@ -36,13 +39,26 @@ def get_hourly_stations(date, lat: float, lon: float):
     if not stations_response.status_code == 200:
         logging.warning("no valid response from server")
         return []
-    files_response = requests.get(url)
-    if not files_response.status_code == 200:
+    pressure_files_response = requests.get(url)
+    if not pressure_files_response.status_code == 200:
         logging.warning("no valid response from server")
         return []
-    file_names = {
+    pressure_file_names = {
         _x["station_id"]: _x["file_name"]
-        for _x in hourly_file_re.finditer(files_response.text)
+        for _x in pressure_hourly_file_re.finditer(pressure_files_response.text)
+    }
+    temperature_files_response = requests.get(
+        "https://opendata.dwd.de/climate_environment/CDC/observations_germany"
+        f"/climate/hourly/air_temperature/{category}/"
+    )
+    if not temperature_files_response.status_code == 200:
+        logging.warning("no valid response from server")
+        return []
+    temperature_file_names = {
+        _x["station_id"]: _x["file_name"]
+        for _x in temperature_hourly_file_re.finditer(
+            temperature_files_response.text
+        )
     }
     selected_location = eV.LatLon(lat, lon)
     for _line in stations_response.text.splitlines():
@@ -56,9 +72,16 @@ def get_hourly_stations(date, lat: float, lon: float):
             if _until < selected_date.floor("day"):
                 continue
             _station_id = _station_data["station_id"]
-            if _station_id not in file_names:
+            if _station_id not in pressure_file_names:
                 continue
-            _station_data["file_name"] = url + file_names[_station_id]
+            _station_data["pressure_file_name"] = (
+                url + pressure_file_names[_station_id]
+            )
+            if _station_id not in temperature_file_names:
+                continue
+            _station_data["temperature_file_name"] = (
+                url + temperature_file_names[_station_id]
+            )
             _station_location = eV.LatLon(
                 _station_data["lat"], _station_data["lon"]
             )
@@ -119,7 +142,6 @@ def get_10_minutes_stations(date, lat: float, lon: float):
             )
             _distance = selected_location.distanceTo(_station_location)
             _station_data["distance"] = round(_distance)
-            #            _station_data["file_url"] =
             stations.append(_station_data)
     sorted_stations = sorted(stations, key=itemgetter("distance"))
     return {"category": category, "stations": sorted_stations}
@@ -133,7 +155,8 @@ if __name__ == "__main__":
     for _station in hourly_stations["stations"][:6]:
         print(
             f"{_station['distance']/1e3:.1f}km distance to "
-            f"{_station['station_name']}, {_station['file_name']}"
+            f"{_station['station_name']}, {_station['pressure_file_name']}, "
+            f"{_station['temperature_file_name']}"
         )
     ten_minutes_stations = get_10_minutes_stations(
         date="20210808T1349", lat=52.52, lon=7.30
