@@ -44,6 +44,14 @@ def unpack_zipped_data(my_file, file_name_prefix):
     return data
 
 
+def unpack_zipped_data_from_url(url, file_name_prefix):
+    response = requests.get(url)
+    if not response.status_code == 200:
+        logging.warning("no data downloaded.")
+        return []
+    return unpack_zipped_data(io.BytesIO(response.content), file_name_prefix)
+
+
 def get_hourly_stations(date, lat: float, lon: float):
     selected_date = arrow.get(date)
     yesterday = arrow.utcnow().floor("day").shift(days=-1)
@@ -55,6 +63,10 @@ def get_hourly_stations(date, lat: float, lon: float):
     url = (
         "https://opendata.dwd.de/climate_environment/CDC/observations_germany"
         f"/climate/hourly/pressure/{category}/"
+    )
+    temperature_url = (
+        "https://opendata.dwd.de/climate_environment/CDC/observations_germany"
+        f"/climate/hourly/air_temperature/{category}/"
     )
     stations_file = "P0_Stundenwerte_Beschreibung_Stationen.txt"
     stations_response = requests.get(url + stations_file)
@@ -69,10 +81,7 @@ def get_hourly_stations(date, lat: float, lon: float):
         _x["station_id"]: _x["file_name"]
         for _x in pressure_hourly_file_re.finditer(pressure_files_response.text)
     }
-    temperature_files_response = requests.get(
-        "https://opendata.dwd.de/climate_environment/CDC/observations_germany"
-        f"/climate/hourly/air_temperature/{category}/"
-    )
+    temperature_files_response = requests.get(temperature_url)
     if not temperature_files_response.status_code == 200:
         logging.warning("no valid response from server")
         return []
@@ -102,7 +111,7 @@ def get_hourly_stations(date, lat: float, lon: float):
             if _station_id not in temperature_file_names:
                 continue
             _station_data["temperature_file_name"] = (
-                url + temperature_file_names[_station_id]
+                temperature_url + temperature_file_names[_station_id]
             )
             _station_location = eV.LatLon(
                 _station_data["lat"], _station_data["lon"]
@@ -169,6 +178,54 @@ def get_10_minutes_stations(date, lat: float, lon: float):
     return {"category": category, "stations": sorted_stations}
 
 
+def get_nearest_hourly_data(date, lat, lon):
+    hourly_stations = get_hourly_stations(date, lat, lon)
+    if len(hourly_stations) == 0:
+        logging.warning("no suitable stations found.")
+        return []
+    nearest_station = hourly_stations["stations"][0]
+    pressure_data = unpack_zipped_data_from_url(
+        nearest_station["pressure_file_name"], "produkt_P0_stunde_"
+    )
+    temperature_data = unpack_zipped_data_from_url(
+        nearest_station["temperature_file_name"], "produkt_TU_stunde_"
+    )
+    combined_data = {}
+    for row in pressure_data:
+        utc = (
+            arrow.get(row["MESS_DATUM"], "YYYYMMDDHH")
+            .shift(minutes=-10)
+            .timestamp
+        )
+        combined_data.setdefault(utc, {})
+        combined_data[utc].update(
+            {"utc": utc, "pressure": int(float(row["P"]) * 100)}
+        )
+    for row in temperature_data:
+        utc = (
+            arrow.get(row["MESS_DATUM"], "YYYYMMDDHH")
+            .shift(minutes=-10)
+            .timestamp
+        )
+        combined_data.setdefault(utc, {})
+        combined_data[utc].update(
+            {
+                "utc": utc,
+                "temperature": float(row["TT_TU"]),
+                "humidity": float(row["RF_TU"]),
+            }
+        )
+    timestamps = sorted(combined_data.keys())
+    output = []
+    for _timestamp in timestamps:
+        output.append(combined_data[_timestamp])
+    return {
+        "category": hourly_stations["category"],
+        "station": nearest_station,
+        "data": output,
+    }
+
+
 if __name__ == "__main__":
     hourly_stations = get_hourly_stations(
         date="20210804T1849", lat=52.52, lon=7.30
@@ -189,3 +246,7 @@ if __name__ == "__main__":
             f"{_station['distance']/1e3:.1f}km distance to "
             f"{_station['station_name']}, {_station['file_name']}"
         )
+    data = get_nearest_hourly_data(date="20210804T1849", lat=52.52, lon=7.30)
+    print(f"downloaded nearest hourly data for {data['station']}.")
+    print(f"first entry: {data['data'][0]}")
+    print(f"last entry: {data['data'][-1]}")
