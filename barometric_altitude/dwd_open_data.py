@@ -1,6 +1,9 @@
 import re
 import requests
 import logging
+import io
+import zipfile
+import csv
 from operator import itemgetter
 import arrow
 import pygeodesy.ellipsoidalVincenty as eV
@@ -20,6 +23,25 @@ temperature_hourly_file_re = re.compile(
 ten_minutes_file_re = re.compile(
     "(?P<file_name>10minutenwerte_TU_(?P<station_id>[0-9]{5})_(?:now|akt|(?:[0-9]{8}_[0-9]{8}_hist)).zip)</a>"
 )
+
+
+def unpack_zipped_data(my_file, file_name_prefix):
+    my_zipfile = zipfile.ZipFile(my_file, "r")
+    for file_name in my_zipfile.namelist():
+        if file_name.startswith(file_name_prefix):
+            break
+    data = []
+    with my_zipfile.open(file_name) as f:
+        # Zipfile only opens file in binary mode, but csv only accepts
+        # text files, so we need to wrap this.
+        # See <https://stackoverflow.com/questions/5627954>.
+        textfile = io.TextIOWrapper(f, encoding="utf8", newline="")
+        for row in csv.DictReader(
+            textfile, delimiter=";", skipinitialspace=True
+        ):
+            del row["eor"]
+            data.append(row)
+    return data
 
 
 def get_hourly_stations(date, lat: float, lon: float):
