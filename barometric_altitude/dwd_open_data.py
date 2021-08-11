@@ -3,10 +3,12 @@ import requests
 import logging
 import io
 import zipfile
-import csv
+import datetime as dt
 from operator import itemgetter
 import arrow
 import pygeodesy.ellipsoidalVincenty as eV
+from barometric_altitude.timeit import timeit
+import pandas as pd
 
 station_re = re.compile(
     "^(?P<station_id>[0-9]{5}) (?P<from>[0-9]{8}) (?P<until>[0-9]{8})\s+"
@@ -25,33 +27,28 @@ ten_minutes_file_re = re.compile(
 )
 
 
+@timeit
 def unpack_zipped_data(my_file, file_name_prefix):
     my_zipfile = zipfile.ZipFile(my_file, "r")
     for file_name in my_zipfile.namelist():
         if file_name.startswith(file_name_prefix):
             break
-    data = []
     with my_zipfile.open(file_name) as f:
-        # Zipfile only opens file in binary mode, but csv only accepts
-        # text files, so we need to wrap this.
-        # See <https://stackoverflow.com/questions/5627954>.
-        textfile = io.TextIOWrapper(f, encoding="utf8", newline="")
-        for row in csv.DictReader(
-            textfile, delimiter=";", skipinitialspace=True
-        ):
-            del row["eor"]
-            data.append(row)
-    return data
+        df = pd.read_csv(f, delimiter=";", skipinitialspace=True)
+        df.drop(columns=["STATIONS_ID", "eor"], inplace=True)
+        return df
 
 
+@timeit
 def unpack_zipped_data_from_url(url, file_name_prefix):
     response = requests.get(url)
     if not response.status_code == 200:
         logging.warning("no data downloaded.")
-        return []
+        return None
     return unpack_zipped_data(io.BytesIO(response.content), file_name_prefix)
 
 
+@timeit
 def get_hourly_stations(date, lat: float, lon: float):
     selected_date = arrow.get(date)
     yesterday = arrow.utcnow().floor("day").shift(days=-1)
@@ -123,6 +120,7 @@ def get_hourly_stations(date, lat: float, lon: float):
     return {"category": category, "stations": sorted_stations}
 
 
+@timeit
 def get_10_minutes_stations(date, lat: float, lon: float):
     selected_date = arrow.get(date)
     today = arrow.utcnow().floor("day")
@@ -178,11 +176,12 @@ def get_10_minutes_stations(date, lat: float, lon: float):
     return {"category": category, "stations": sorted_stations}
 
 
-def get_nearest_hourly_data(date, lat, lon):
+@timeit
+def get_nearest_hourly_data(date, lat, lon, as_dataframe=False):
     hourly_stations = get_hourly_stations(date, lat, lon)
     if len(hourly_stations) == 0:
         logging.warning("no suitable stations found.")
-        return []
+        return None
     nearest_station = hourly_stations["stations"][0]
     pressure_data = unpack_zipped_data_from_url(
         nearest_station["pressure_file_name"], "produkt_P0_stunde_"
@@ -190,39 +189,71 @@ def get_nearest_hourly_data(date, lat, lon):
     temperature_data = unpack_zipped_data_from_url(
         nearest_station["temperature_file_name"], "produkt_TU_stunde_"
     )
-    combined_data = {}
-    for row in pressure_data:
-        utc = (
-            arrow.get(row["MESS_DATUM"], "YYYYMMDDHH")
-            .shift(minutes=-10)
-            .timestamp
-        )
-        combined_data.setdefault(utc, {})
-        combined_data[utc].update(
-            {"utc": utc, "pressure": int(float(row["P"]) * 100)}
-        )
-    for row in temperature_data:
-        utc = (
-            arrow.get(row["MESS_DATUM"], "YYYYMMDDHH")
-            .shift(minutes=-10)
-            .timestamp
-        )
-        combined_data.setdefault(utc, {})
-        combined_data[utc].update(
-            {
-                "utc": utc,
-                "temperature": float(row["TT_TU"]),
-                "humidity": float(row["RF_TU"]),
-            }
-        )
-    timestamps = sorted(combined_data.keys())
-    output = []
-    for _timestamp in timestamps:
-        output.append(combined_data[_timestamp])
+    combined_data = pd.merge(pressure_data, temperature_data, on="MESS_DATUM")
+    combined_data.MESS_DATUM = pd.to_datetime(
+        combined_data.MESS_DATUM, format="%Y%m%d%H"
+    ) - dt.timedelta(minutes=10)
+    combined_data["utc"] = (
+        (combined_data.MESS_DATUM - dt.datetime(1970, 1, 1))
+        .dt.total_seconds()
+        .astype(int)
+    )
+    combined_data.rename(
+        columns={
+            "P": "pressure",
+            "P0": "p0",
+            "TT_TU": "temperature",
+            "RF_TU": "humidity",
+        },
+        inplace=True,
+    )
+    combined_data.set_index("MESS_DATUM", inplace=True)
+    combined_data.drop(columns=["QN_8", "QN_9"], inplace=True)
+    if as_dataframe:
+        data = combined_data
+    else:
+        data = combined_data.to_dict("records")
     return {
         "category": hourly_stations["category"],
         "station": nearest_station,
-        "data": output,
+        "data": data,
+    }
+
+
+@timeit
+def get_nearest_10_minutes_data(date, lat, lon, as_dataframe=False):
+    ten_minutes_stations = get_10_minutes_stations(date, lat, lon)
+    if len(ten_minutes_stations) == 0:
+        logging.warning("no suitable stations found.")
+        return None
+    nearest_station = ten_minutes_stations["stations"][0]
+    data = unpack_zipped_data_from_url(
+        nearest_station["file_name"], "produkt_zehn_"
+    )
+    data.MESS_DATUM = pd.to_datetime(data.MESS_DATUM, format="%Y%m%d%H%M")
+    data["utc"] = (
+        (data.MESS_DATUM - dt.datetime(1970, 1, 1))
+        .dt.total_seconds()
+        .astype(int)
+    )
+    data.set_index("MESS_DATUM", inplace=True)
+    data.rename(
+        columns={
+            "PP_10": "pressure",
+            "TT_10": "temperature",
+            "RF_10": "humidity",
+        },
+        inplace=True,
+    )
+    data.drop(columns=["QN", "TD_10", "TM5_10"], inplace=True, errors="ignore")
+    if not as_dataframe:
+        output_data = data.to_dict("records")
+    else:
+        output_data = data.to_dict("records")
+    return {
+        "category": ten_minutes_stations["category"],
+        "station": nearest_station,
+        "data": output_data,
     }
 
 
@@ -248,5 +279,11 @@ if __name__ == "__main__":
         )
     data = get_nearest_hourly_data(date="20210804T1849", lat=52.52, lon=7.30)
     print(f"downloaded nearest hourly data for {data['station']}.")
+    print(f"first entry: {data['data'][0]}")
+    print(f"last entry: {data['data'][-1]}")
+    data = get_nearest_10_minutes_data(
+        date="20210804T1849", lat=52.52, lon=7.30
+    )
+    print(f"downloaded nearest 10 minutes data for {data['station']}.")
     print(f"first entry: {data['data'][0]}")
     print(f"last entry: {data['data'][-1]}")
