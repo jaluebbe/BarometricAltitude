@@ -25,7 +25,7 @@ temperature_hourly_file_re = re.compile(
 
 
 @timeit
-def unpack_zipped_data(my_file, file_name_prefix):
+def unpack_zipped_data(my_file, file_name_prefix: str):
     my_zipfile = zipfile.ZipFile(my_file, "r")
     for file_name in my_zipfile.namelist():
         if file_name.startswith(file_name_prefix):
@@ -37,7 +37,7 @@ def unpack_zipped_data(my_file, file_name_prefix):
 
 
 @timeit
-def unpack_zipped_data_from_url(url, file_name_prefix):
+def unpack_zipped_data_from_url(url: str, file_name_prefix: str):
     response = requests.get(url)
     if not response.status_code == 200:
         logging.warning("no data downloaded.")
@@ -46,7 +46,7 @@ def unpack_zipped_data_from_url(url, file_name_prefix):
 
 
 @timeit
-def get_hourly_stations(date, lat: float, lon: float):
+def get_hourly_stations(date: str, lat: float, lon: float):
     selected_date = arrow.get(date)
     yesterday = arrow.utcnow().floor("day").shift(days=-1)
     stations = []
@@ -119,11 +119,11 @@ def get_hourly_stations(date, lat: float, lon: float):
 
 @timeit
 def get_nearest_hourly_data(
-    date,
+    date: str,
     lat: float,
     lon: float,
-    as_dataframe=False,
-    bounds: dt.timedelta = None,
+    as_dataframe: bool = False,
+    bounds_minutes: float = None,
 ):
     hourly_stations = get_hourly_stations(date, lat, lon)
     if len(hourly_stations) == 0:
@@ -156,10 +156,11 @@ def get_nearest_hourly_data(
     )
     combined_data.set_index("MESS_DATUM", inplace=True)
     combined_data.drop(columns=["QN_8", "QN_9"], inplace=True)
-    if bounds is not None:
+    if bounds_minutes is not None:
         _date = pd.to_datetime(date)
-        _start = _date - bounds
-        _stop = _date + bounds
+        _bounds = dt.timedelta(minutes=bounds_minutes)
+        _start = _date - _bounds
+        _stop = _date + _bounds
         mask = (combined_data.index >= _start) & (combined_data.index < _stop)
         combined_data = combined_data.loc[mask]
     if as_dataframe:
@@ -195,7 +196,7 @@ if __name__ == "__main__":
         lat=52.52,
         lon=7.30,
         as_dataframe=False,
-        bounds=dt.timedelta(minutes=30),
+        bounds_minutes=30,
     )
     print(f"downloaded nearest hourly data for {data['station']}.")
     print(f"target entry: {data['data']}")
