@@ -118,7 +118,13 @@ def get_hourly_stations(date, lat: float, lon: float):
 
 
 @timeit
-def get_nearest_hourly_data(date, lat, lon, as_dataframe=False):
+def get_nearest_hourly_data(
+    date,
+    lat: float,
+    lon: float,
+    as_dataframe=False,
+    bounds: dt.timedelta = None,
+):
     hourly_stations = get_hourly_stations(date, lat, lon)
     if len(hourly_stations) == 0:
         logging.warning("no suitable stations found.")
@@ -150,6 +156,12 @@ def get_nearest_hourly_data(date, lat, lon, as_dataframe=False):
     )
     combined_data.set_index("MESS_DATUM", inplace=True)
     combined_data.drop(columns=["QN_8", "QN_9"], inplace=True)
+    if bounds is not None:
+        _date = pd.to_datetime(date)
+        _start = _date - bounds
+        _stop = _date + bounds
+        mask = (combined_data.index >= _start) & (combined_data.index < _stop)
+        combined_data = combined_data.loc[mask]
     if as_dataframe:
         data = combined_data
     else:
@@ -172,7 +184,18 @@ if __name__ == "__main__":
             f"{_station['station_name']}, {_station['pressure_file_name']}, "
             f"{_station['temperature_file_name']}"
         )
-    data = get_nearest_hourly_data(date="20210804T1849", lat=52.52, lon=7.30)
+    data = get_nearest_hourly_data(
+        date="20210804T1849", lat=52.52, lon=7.30, as_dataframe=False
+    )
     print(f"downloaded nearest hourly data for {data['station']}.")
     print(f"first entry: {data['data'][0]}")
     print(f"last entry: {data['data'][-1]}")
+    data = get_nearest_hourly_data(
+        date="20210804T1849",
+        lat=52.52,
+        lon=7.30,
+        as_dataframe=False,
+        bounds=dt.timedelta(minutes=30),
+    )
+    print(f"downloaded nearest hourly data for {data['station']}.")
+    print(f"target entry: {data['data']}")
