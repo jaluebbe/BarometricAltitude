@@ -30,12 +30,12 @@ temperature_hourly_file_re = re.compile(
 def unpack_zipped_data(my_file, file_name_prefix: str):
     my_zipfile = zipfile.ZipFile(my_file, "r")
     for file_name in my_zipfile.namelist():
-        if file_name.startswith(file_name_prefix):
-            break
-    with my_zipfile.open(file_name) as f:
-        df = pd.read_csv(f, delimiter=";", skipinitialspace=True)
-        df.drop(columns=["STATIONS_ID", "eor"], inplace=True)
-        return df
+        if not file_name.startswith(file_name_prefix):
+            continue
+        with my_zipfile.open(file_name) as f:
+            df = pd.read_csv(f, delimiter=";", skipinitialspace=True)
+            df.drop(columns=["STATIONS_ID", "eor"], inplace=True)
+            return df
 
 
 @timeit
