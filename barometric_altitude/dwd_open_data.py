@@ -11,16 +11,18 @@ from barometric_altitude.timeit import timeit
 import pandas as pd
 
 station_re = re.compile(
-    "^(?P<station_id>[0-9]{5}) (?P<from>[0-9]{8}) (?P<until>[0-9]{8})\s+"
-    "(?P<elevation>-?[0-9]{1,4})\s+(?P<lat>[45][0-9]\.[0-9]{4})\s+"
-    "(?P<lon>[1]?[0-9]\.[0-9]{4})\s+(?P<station_name>[A-ZÄ-Ü].*\S)\s+"
-    "(?P<state>[A-Z].*\S)"
+    "^(?P<station_id>[0-9]{5}) (?P<from>[0-9]{8}) (?P<until>[0-9]{8})\\s+"
+    "(?P<elevation>-?[0-9]{1,4})\\s+(?P<lat>[45][0-9]\\.[0-9]{4})\\s+"
+    "(?P<lon>[1]?[0-9]\\.[0-9]{4})\\s+(?P<station_name>[A-ZÄ-Ü].*\\S)\\s+"
+    "(?P<state>[A-Z].*\\S)"
 )
 pressure_hourly_file_re = re.compile(
-    "(?P<file_name>stundenwerte_P0_(?P<station_id>[0-9]{5})_(?:akt|(?:[0-9]{8}_[0-9]{8}_hist)).zip)</a>"
+    "(?P<file_name>stundenwerte_P0_(?P<station_id>[0-9]{5})_"
+    "(?:akt|(?:[0-9]{8}_[0-9]{8}_hist)).zip)</a>"
 )
 temperature_hourly_file_re = re.compile(
-    "(?P<file_name>stundenwerte_TU_(?P<station_id>[0-9]{5})_(?:akt|(?:[0-9]{8}_[0-9]{8}_hist)).zip)</a>"
+    "(?P<file_name>stundenwerte_TU_(?P<station_id>[0-9]{5})_"
+    "(?:akt|(?:[0-9]{8}_[0-9]{8}_hist)).zip)</a>"
 )
 
 
@@ -46,7 +48,7 @@ def unpack_zipped_data_from_url(url: str, file_name_prefix: str):
 
 
 @timeit
-def get_hourly_stations(date: str, lat: float, lon: float):
+def get_hourly_stations(date, lat: float, lon: float):
     selected_date = arrow.get(date)
     yesterday = arrow.utcnow().floor("day").shift(days=-1)
     stations = []
@@ -119,12 +121,25 @@ def get_hourly_stations(date: str, lat: float, lon: float):
 
 @timeit
 def get_nearest_hourly_data(
-    date: str,
+    date,
     lat: float,
     lon: float,
     as_dataframe: bool = False,
     bounds_minutes: float = None,
 ):
+    """
+    Lookup pressure, temperature (and humidity) data from the DWD Open Data
+    Server (https://opendata.dwd.de). The data may be available from 1949
+    until yesterday depending on the availability of the selected station.
+    :param date: The date of interest may be entered as string like
+    "20210804T1849" or as seconds since epoch like 1628102940.
+    :param lat: Latitude of target location within Germany.
+    :param lon: Longitude of target location within Germany.
+    :param as_dataframe: Return results as pandas.DataFrame? Defaults to False.
+    :param bounds_minutes: Provide range around target date in minutes.
+    Defaults to None.
+    :return: dict
+    """
     hourly_stations = get_hourly_stations(date, lat, lon)
     if len(hourly_stations) == 0:
         logging.warning("no suitable stations found.")
@@ -157,7 +172,10 @@ def get_nearest_hourly_data(
     combined_data.set_index("MESS_DATUM", inplace=True)
     combined_data.drop(columns=["QN_8", "QN_9"], inplace=True)
     if bounds_minutes is not None:
-        _date = pd.to_datetime(date)
+        if isinstance(date, int):
+            _date = dt.datetime.utcfromtimestamp(date)
+        else:
+            _date = pd.to_datetime(date)
         _bounds = dt.timedelta(minutes=bounds_minutes)
         _start = _date - _bounds
         _stop = _date + _bounds
@@ -193,6 +211,15 @@ if __name__ == "__main__":
     print(f"last entry: {data['data'][-1]}")
     data = get_nearest_hourly_data(
         date="20210804T1849",
+        lat=52.52,
+        lon=7.30,
+        as_dataframe=False,
+        bounds_minutes=30,
+    )
+    print(f"downloaded nearest hourly data for {data['station']}.")
+    print(f"target entry: {data['data']}")
+    data = get_nearest_hourly_data(
+        date=1628102940,
         lat=52.52,
         lon=7.30,
         as_dataframe=False,
