@@ -146,10 +146,10 @@ def get_nearest_hourly_data(
         return None
     nearest_station = hourly_stations["stations"][0]
     pressure_data = unpack_zipped_data_from_url(
-        nearest_station["pressure_file_name"], "produkt_P0_stunde_"
+        nearest_station["pressure_file_name"], "produkt_"
     )
     temperature_data = unpack_zipped_data_from_url(
-        nearest_station["temperature_file_name"], "produkt_TU_stunde_"
+        nearest_station["temperature_file_name"], "produkt_"
     )
     combined_data = pd.merge(pressure_data, temperature_data, on="MESS_DATUM")
     combined_data.MESS_DATUM = pd.to_datetime(
