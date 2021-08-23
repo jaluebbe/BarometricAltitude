@@ -163,7 +163,7 @@ def get_nearest_hourly_data(
     combined_data.rename(
         columns={
             "P": "pressure",
-            "P0": "p0",
+            "P0": "station_pressure",
             "TT_TU": "temperature",
             "RF_TU": "humidity",
         },
