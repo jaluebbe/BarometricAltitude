@@ -233,6 +233,9 @@ def get_nearest_hourly_data(
         data = combined_data
     else:
         data = combined_data.to_dict("records")
+        elevation_history[["from_date", "until_date"]] = elevation_history[
+            ["from_date", "until_date"]
+        ].astype(str)
         elevation_history = elevation_history.to_dict("records")
     if len(elevation_history) > 1:
         logging.warning("Station elevation differs during selected time range.")
