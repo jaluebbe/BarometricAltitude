@@ -29,13 +29,50 @@ temperature_hourly_file_re = re.compile(
 @timeit
 def unpack_zipped_data(my_file, file_name_prefix: str):
     my_zipfile = zipfile.ZipFile(my_file, "r")
+    response = {}
     for file_name in my_zipfile.namelist():
-        if not file_name.startswith(file_name_prefix):
-            continue
-        with my_zipfile.open(file_name) as f:
-            df = pd.read_csv(f, delimiter=";", skipinitialspace=True)
+        if file_name.startswith(file_name_prefix):
+            with my_zipfile.open(file_name) as f:
+                df = pd.read_csv(f, delimiter=";", skipinitialspace=True)
             df.drop(columns=["STATIONS_ID", "eor"], inplace=True)
-            return df
+            response["data"] = df
+        elif file_name.startswith("Metadaten_Geographie_"):
+            with my_zipfile.open(file_name) as f:
+                df = pd.read_csv(
+                    f,
+                    delimiter=";",
+                    skipinitialspace=True,
+                    parse_dates=["von_datum", "bis_datum"],
+                )
+            df.drop(
+                ["Stationsname", "Stations_id", "Geogr.Breite", "Geogr.Laenge"],
+                axis="columns",
+                inplace=True,
+            )
+            df.rename(
+                columns={
+                    "Stationshoehe": "elevation",
+                    "von_datum": "from_date",
+                    "bis_datum": "until_date",
+                },
+                inplace=True,
+            )
+            df.until_date.replace(
+                {pd.NaT: dt.datetime.now().replace(microsecond=0)}, inplace=True
+            )
+            response["elevation_history"] = df.groupby(
+                [
+                    "elevation",
+                    (
+                        ~(
+                            df["from_date"]
+                            <= (df["until_date"].shift() + pd.Timedelta(days=1))
+                        )
+                    ).cumsum(),
+                ],
+                as_index=False,
+            ).agg({"from_date": "min", "until_date": "max"})
+    return response
 
 
 @timeit
@@ -151,7 +188,10 @@ def get_nearest_hourly_data(
     temperature_data = unpack_zipped_data_from_url(
         nearest_station["temperature_file_name"], "produkt_"
     )
-    combined_data = pd.merge(pressure_data, temperature_data, on="MESS_DATUM")
+    combined_data = pd.merge(
+        pressure_data["data"], temperature_data["data"], on="MESS_DATUM"
+    )
+    elevation_history = pressure_data["elevation_history"]
     combined_data.MESS_DATUM = pd.to_datetime(
         combined_data.MESS_DATUM, format="%Y%m%d%H"
     ) - dt.timedelta(minutes=10)
@@ -160,6 +200,14 @@ def get_nearest_hourly_data(
         .dt.total_seconds()
         .astype(int)
     )
+    min_date = combined_data.MESS_DATUM.min()
+    max_date = combined_data.MESS_DATUM.max()
+    elevation_history = elevation_history[
+        ~(
+            (elevation_history.until_date < min_date)
+            | (elevation_history.from_date > max_date)
+        )
+    ]
     combined_data.rename(
         columns={
             "P": "pressure",
@@ -185,10 +233,14 @@ def get_nearest_hourly_data(
         data = combined_data
     else:
         data = combined_data.to_dict("records")
+        elevation_history = elevation_history.to_dict("records")
+    if len(elevation_history) > 1:
+        logging.warning("Station elevation differs during selected time range.")
     return {
         "category": hourly_stations["category"],
         "station": nearest_station,
         "data": data,
+        "elevation_history": elevation_history,
     }
 
 
