@@ -1,0 +1,12 @@
+name: barometric_altitude
+dependencies:
+  - requests
+  - requests-cache
+  - arrow
+  - numpy
+  - scipy
+  - pandas
+  - pydantic
+  - pip
+  - pip:
+    - PyGeodesy
