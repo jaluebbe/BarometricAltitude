@@ -199,52 +199,38 @@ def unpack_zipped_data_from_url(url: str, file_name_prefix: str):
 
 
 @timeit
-def get_hourly_stations(date, lat: float, lon: float):
+def get_hourly_stations(date, lat: float = None, lon: float = None):
     stations = []
     catalog = _hourly_catalog.get_catalog(date)
     if catalog is None:
         return []
-    selected_location = eV.LatLon(lat, lon)
-    for _station in catalog["stations"]:
-        _station_location = eV.LatLon(_station["lat"], _station["lon"])
-        _distance = selected_location.distanceTo(_station_location)
-        _station["distance"] = round(_distance)
-        stations.append(_station)
-    sorted_stations = sorted(stations, key=itemgetter("distance"))
-    return {"category": catalog["category"], "stations": sorted_stations}
+    response = {"category": catalog["category"]}
+    if None in (lat, lon):
+        response["stations"] = catalog["stations"]
+    else:
+        selected_location = eV.LatLon(lat, lon)
+        for _station in catalog["stations"]:
+            _station_location = eV.LatLon(_station["lat"], _station["lon"])
+            _distance = selected_location.distanceTo(_station_location)
+            _station["distance"] = round(_distance)
+            stations.append(_station)
+        sorted_stations = sorted(stations, key=itemgetter("distance"))
+        response["stations"] = sorted_stations
+    return response
 
 
 @timeit
-def get_nearest_hourly_data(
+def get_hourly_data(
+    station: dict,
     date,
-    lat: float,
-    lon: float,
     as_dataframe: bool = False,
     bounds_minutes: float = None,
 ):
-    """
-    Lookup pressure, temperature (and humidity) data from the DWD Open Data
-    Server (https://opendata.dwd.de). The data may be available from 1949
-    until yesterday depending on the availability of the selected station.
-    :param date: The date of interest may be entered as string like
-    "20210804T1849" or as seconds since epoch like 1628102940.
-    :param lat: Latitude of target location within Germany.
-    :param lon: Longitude of target location within Germany.
-    :param as_dataframe: Return results as pandas.DataFrame? Defaults to False.
-    :param bounds_minutes: Provide range around target date in minutes.
-    Defaults to None.
-    :return: dict
-    """
-    hourly_stations = get_hourly_stations(date, lat, lon)
-    if len(hourly_stations) == 0:
-        logging.warning("no suitable stations found.")
-        return None
-    nearest_station = hourly_stations["stations"][0]
     pressure_data = unpack_zipped_data_from_url(
-        nearest_station["pressure_file_name"], "produkt_"
+        station["pressure_file_name"], "produkt_"
     )
     temperature_data = unpack_zipped_data_from_url(
-        nearest_station["temperature_file_name"], "produkt_"
+        station["temperature_file_name"], "produkt_"
     )
     combined_data = pd.merge(
         pressure_data["data"], temperature_data["data"], on="MESS_DATUM"
@@ -313,12 +299,41 @@ def get_nearest_hourly_data(
     _device = _device.to_dict()
     _device["from"] = _device["from"].strftime("%Y%m%d")  #
     _device["until"] = _device["until"].strftime("%Y%m%d")
-    nearest_station.update(_device)
+    station.update(_device)
     return {
         "category": hourly_stations["category"],
-        "station": nearest_station,
+        "station": station,
         "data": data,
     }
+
+
+@timeit
+def get_nearest_hourly_data(
+    date,
+    lat: float,
+    lon: float,
+    as_dataframe: bool = False,
+    bounds_minutes: float = None,
+):
+    """
+    Lookup pressure, temperature (and humidity) data from the DWD Open Data
+    Server (https://opendata.dwd.de). The data may be available from 1949
+    until yesterday depending on the availability of the selected station.
+    :param date: The date of interest may be entered as string like
+    "20210804T1849" or as seconds since epoch like 1628102940.
+    :param lat: Latitude of target location within Germany.
+    :param lon: Longitude of target location within Germany.
+    :param as_dataframe: Return results as pandas.DataFrame? Defaults to False.
+    :param bounds_minutes: Provide range around target date in minutes.
+    Defaults to None.
+    :return: dict
+    """
+    hourly_stations = get_hourly_stations(date, lat, lon)
+    if len(hourly_stations) == 0:
+        logging.warning("no suitable stations found.")
+        return None
+    nearest_station = hourly_stations["stations"][0]
+    return get_hourly_data(nearest_station, date, as_dataframe, bounds_minutes)
 
 
 if __name__ == "__main__":
