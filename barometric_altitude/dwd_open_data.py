@@ -11,7 +11,7 @@ import pygeodesy.ellipsoidalVincenty as eV
 from barometric_altitude.timeit import timeit
 import pandas as pd
 
-logging.basicConfig(level="INFO")
+# logging.basicConfig(level="INFO")
 
 
 class HourlyCatalog:
