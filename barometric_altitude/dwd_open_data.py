@@ -1,5 +1,6 @@
 import re
 import requests
+from requests_cache import CachedSession
 import logging
 import io
 import zipfile
@@ -10,20 +11,108 @@ import pygeodesy.ellipsoidalVincenty as eV
 from barometric_altitude.timeit import timeit
 import pandas as pd
 
-station_re = re.compile(
-    "^(?P<station_id>[0-9]{5}) (?P<from>[0-9]{8}) (?P<until>[0-9]{8})\\s+"
-    "(?P<elevation>-?[0-9]{1,4})\\s+(?P<lat>[45][0-9]\\.[0-9]{4})\\s+"
-    "(?P<lon>[1]?[0-9]\\.[0-9]{4})\\s+(?P<station_name>[A-ZÄ-Ü].*\\S)\\s+"
-    "(?P<state>[A-Z].*\\S)"
-)
-pressure_hourly_file_re = re.compile(
-    "(?P<file_name>stundenwerte_P0_(?P<station_id>[0-9]{5})_"
-    "(?:akt|(?:[0-9]{8}_[0-9]{8}_hist)).zip)</a>"
-)
-temperature_hourly_file_re = re.compile(
-    "(?P<file_name>stundenwerte_TU_(?P<station_id>[0-9]{5})_"
-    "(?:akt|(?:[0-9]{8}_[0-9]{8}_hist)).zip)</a>"
-)
+logging.basicConfig(level="INFO")
+
+
+class HourlyCatalog:
+    def __init__(self):
+        self.url = (
+            "https://opendata.dwd.de/climate_environment/CDC/"
+            "observations_germany/climate/hourly/"
+        )
+        self.station_re = re.compile(
+            "(?P<station_id>[0-9]{5}) (?P<from>[0-9]{8}) (?P<until>[0-9]{8})"
+            "\\s+(?P<elevation>-?[0-9]{1,4})\\s+(?P<lat>[45][0-9]\\.[0-9]{4})"
+            "\\s+(?P<lon>[1]?[0-9]\\.[0-9]{4})\\s+(?P<station_name>[A-ZÄ-Ü].*"
+            "\\S)\\s+(?P<state>[A-Z].*\\S)"
+        )
+        self.pressure_re = re.compile(
+            "(?P<file_name>stundenwerte_P0_(?P<station_id>[0-9]{5})_"
+            "(?:akt|(?:[0-9]{8}_[0-9]{8}_hist)).zip)</a>"
+        )
+        self.temperature_re = re.compile(
+            "(?P<file_name>stundenwerte_TU_(?P<station_id>[0-9]{5})_"
+            "(?:akt|(?:[0-9]{8}_[0-9]{8}_hist)).zip)</a>"
+        )
+        self.updated = None
+        self.stations = None
+        self.pressure = {"recent": None, "historical": None}
+        self.temperature = {"recent": None, "historical": None}
+
+    @timeit
+    def download_catalog(self):
+        _url = f"{self.url}pressure/recent/"
+        stations_response = requests.get(
+            _url + "P0_Stundenwerte_Beschreibung_Stationen.txt"
+        )
+        if not stations_response.status_code == 200:
+            logging.warning("no valid response from server")
+            return None
+        self.stations = [
+            _x.groupdict()
+            for _x in self.station_re.finditer(stations_response.text)
+        ]
+        for category in ("historical", "recent"):
+            _url = f"{self.url}pressure/{category}/"
+            pressure_response = requests.get(_url)
+            if not pressure_response.status_code == 200:
+                logging.warning("no valid response from server")
+                return None
+            self.pressure[category] = {
+                _x["station_id"]: _url + _x["file_name"]
+                for _x in self.pressure_re.finditer(pressure_response.text)
+            }
+            _url = f"{self.url}air_temperature/{category}/"
+            temperature_response = requests.get(_url)
+            if not temperature_response.status_code == 200:
+                logging.warning("no valid response from server")
+                return None
+            self.temperature[category] = {
+                _x["station_id"]: _url + _x["file_name"]
+                for _x in self.temperature_re.finditer(
+                    temperature_response.text
+                )
+            }
+        self.updated = arrow.utcnow()
+
+    @timeit
+    def check_catalog(self):
+        if self.updated is None:
+            self.download_catalog()
+        elif self.updated < arrow.utcnow().shift(hours=-8):
+            self.download_catalog()
+        return self.updated is not None
+
+    @timeit
+    def get_catalog(self, date):
+        if not self.check_catalog():
+            return None
+        selected_date = arrow.get(date)
+        yesterday = arrow.utcnow().floor("day").shift(days=-1)
+        if selected_date < yesterday.shift(days=-500):
+            category = "historical"
+        else:
+            category = "recent"
+        _pressures = self.pressure[category]
+        _temperatures = self.temperature[category]
+        available_stations = [
+            {
+                **_station,
+                "pressure_file_name": _pressures[_station["station_id"]],
+                "temperature_file_name": _temperatures[_station["station_id"]],
+            }
+            for _station in self.stations
+            if _station["station_id"] in _pressures
+            and _station["station_id"] in _temperatures
+            and arrow.get(_station["from"]) <= selected_date
+            and arrow.get(_station["until"]) >= selected_date.floor("day")
+        ]
+        return {"stations": available_stations, "category": category}
+
+
+_hourly_catalog = HourlyCatalog()
+_session = requests.Session()
+_session = CachedSession("dwd_data", expire_after=dt.timedelta(hours=8))
 
 
 @timeit
@@ -31,7 +120,9 @@ def unpack_zipped_data(my_file, file_name_prefix: str):
     my_zipfile = zipfile.ZipFile(my_file, "r")
     response = {}
     for file_name in my_zipfile.namelist():
-        if file_name.startswith(file_name_prefix):
+        if not file_name.endswith(".txt"):
+            continue
+        elif file_name.startswith(file_name_prefix):
             with my_zipfile.open(file_name) as f:
                 df = pd.read_csv(f, delimiter=";", skipinitialspace=True)
             df.drop(columns=["STATIONS_ID", "eor"], inplace=True)
@@ -43,41 +134,64 @@ def unpack_zipped_data(my_file, file_name_prefix: str):
                     delimiter=";",
                     skipinitialspace=True,
                     parse_dates=["von_datum", "bis_datum"],
+                    encoding="latin",
                 )
-            df.drop(
-                ["Stationsname", "Stations_id", "Geogr.Breite", "Geogr.Laenge"],
-                axis="columns",
-                inplace=True,
-            )
             df.rename(
                 columns={
+                    "Stations_id": "station_id",
+                    "Stationsname": "station_name",
                     "Stationshoehe": "elevation",
-                    "von_datum": "from_date",
-                    "bis_datum": "until_date",
+                    "von_datum": "from",
+                    "bis_datum": "until",
+                    "Geogr.Breite": "lat",
+                    "Geogr.Laenge": "lon",
                 },
                 inplace=True,
             )
-            df.until_date.replace(
+            df["until"].replace(
                 {pd.NaT: dt.datetime.now().replace(microsecond=0)}, inplace=True
             )
-            response["elevation_history"] = df.groupby(
-                [
-                    "elevation",
-                    (
-                        ~(
-                            df["from_date"]
-                            <= (df["until_date"].shift() + pd.Timedelta(days=1))
-                        )
-                    ).cumsum(),
-                ],
-                as_index=False,
-            ).agg({"from_date": "min", "until_date": "max"})
+            response["elevation_history"] = df
+        elif file_name.startswith("Metadaten_Geraete_Luftdruck_"):
+            with my_zipfile.open(file_name) as f:
+                df = pd.read_csv(
+                    f,
+                    delimiter=";",
+                    skipinitialspace=True,
+                    parse_dates=["Von_Datum", "Bis_Datum"],
+                    encoding="latin",
+                    usecols=[
+                        "Stations_ID",
+                        "Stationsname",
+                        "Stationshoehe [m]",
+                        "Geraetetyp Name",
+                        "Von_Datum",
+                        "Bis_Datum",
+                        "Geo. Breite [Grad]",
+                        "Geo. Laenge [Grad]",
+                    ],
+                )
+            df.rename(
+                columns={
+                    "Stations_ID": "station_id",
+                    "Stationsname": "station_name",
+                    "Stationshoehe [m]": "elevation",
+                    "Geraetetyp Name": "device_name",
+                    "Von_Datum": "from",
+                    "Bis_Datum": "until",
+                    "Geo. Breite [Grad]": "lat",
+                    "Geo. Laenge [Grad]": "lon",
+                },
+                inplace=True,
+            )
+            df.dropna(subset=["elevation", "device_name"], inplace=True)
+            response["device_history"] = df
     return response
 
 
 @timeit
 def unpack_zipped_data_from_url(url: str, file_name_prefix: str):
-    response = requests.get(url)
+    response = _session.get(url)
     if not response.status_code == 200:
         logging.warning("no data downloaded.")
         return None
@@ -86,74 +200,18 @@ def unpack_zipped_data_from_url(url: str, file_name_prefix: str):
 
 @timeit
 def get_hourly_stations(date, lat: float, lon: float):
-    selected_date = arrow.get(date)
-    yesterday = arrow.utcnow().floor("day").shift(days=-1)
     stations = []
-    if arrow.get(date) < yesterday.shift(days=-500):
-        category = "historical"
-    else:
-        category = "recent"
-    url = (
-        "https://opendata.dwd.de/climate_environment/CDC/observations_germany"
-        f"/climate/hourly/pressure/{category}/"
-    )
-    temperature_url = (
-        "https://opendata.dwd.de/climate_environment/CDC/observations_germany"
-        f"/climate/hourly/air_temperature/{category}/"
-    )
-    stations_file = "P0_Stundenwerte_Beschreibung_Stationen.txt"
-    stations_response = requests.get(url + stations_file)
-    if not stations_response.status_code == 200:
-        logging.warning("no valid response from server")
+    catalog = _hourly_catalog.get_catalog(date)
+    if catalog is None:
         return []
-    pressure_files_response = requests.get(url)
-    if not pressure_files_response.status_code == 200:
-        logging.warning("no valid response from server")
-        return []
-    pressure_file_names = {
-        _x["station_id"]: _x["file_name"]
-        for _x in pressure_hourly_file_re.finditer(pressure_files_response.text)
-    }
-    temperature_files_response = requests.get(temperature_url)
-    if not temperature_files_response.status_code == 200:
-        logging.warning("no valid response from server")
-        return []
-    temperature_file_names = {
-        _x["station_id"]: _x["file_name"]
-        for _x in temperature_hourly_file_re.finditer(
-            temperature_files_response.text
-        )
-    }
     selected_location = eV.LatLon(lat, lon)
-    for _line in stations_response.text.splitlines():
-        _match = station_re.match(_line)
-        if _match is not None:
-            _station_data = _match.groupdict()
-            _from = arrow.get(_station_data["from"])
-            if _from > selected_date:
-                continue
-            _until = arrow.get(_station_data["until"])
-            if _until < selected_date.floor("day"):
-                continue
-            _station_id = _station_data["station_id"]
-            if _station_id not in pressure_file_names:
-                continue
-            _station_data["pressure_file_name"] = (
-                url + pressure_file_names[_station_id]
-            )
-            if _station_id not in temperature_file_names:
-                continue
-            _station_data["temperature_file_name"] = (
-                temperature_url + temperature_file_names[_station_id]
-            )
-            _station_location = eV.LatLon(
-                _station_data["lat"], _station_data["lon"]
-            )
-            _distance = selected_location.distanceTo(_station_location)
-            _station_data["distance"] = round(_distance)
-            stations.append(_station_data)
+    for _station in catalog["stations"]:
+        _station_location = eV.LatLon(_station["lat"], _station["lon"])
+        _distance = selected_location.distanceTo(_station_location)
+        _station["distance"] = round(_distance)
+        stations.append(_station)
     sorted_stations = sorted(stations, key=itemgetter("distance"))
-    return {"category": category, "stations": sorted_stations}
+    return {"category": catalog["category"], "stations": sorted_stations}
 
 
 @timeit
@@ -191,7 +249,6 @@ def get_nearest_hourly_data(
     combined_data = pd.merge(
         pressure_data["data"], temperature_data["data"], on="MESS_DATUM"
     )
-    elevation_history = pressure_data["elevation_history"]
     combined_data.MESS_DATUM = pd.to_datetime(
         combined_data.MESS_DATUM, format="%Y%m%d%H"
     ) - dt.timedelta(minutes=10)
@@ -200,14 +257,30 @@ def get_nearest_hourly_data(
         .dt.total_seconds()
         .astype(int)
     )
-    min_date = combined_data.MESS_DATUM.min()
-    max_date = combined_data.MESS_DATUM.max()
-    elevation_history = elevation_history[
-        ~(
-            (elevation_history.until_date < min_date)
-            | (elevation_history.from_date > max_date)
+    if isinstance(date, int):
+        _date = dt.datetime.utcfromtimestamp(date)
+    else:
+        _date = pd.to_datetime(date)
+    device_history = pressure_data.get("device_history")
+    if device_history is not None:
+        _mask = (device_history["until"] + pd.Timedelta(days=1) > _date) & (
+            device_history["from"] <= _date
         )
-    ]
+        device_history = device_history.loc[_mask]
+        if len(device_history) > 1:
+            # prefer electronic over conventional devices if both exist
+            device_history = device_history[
+                device_history["device_name"] != "Stationsbarometer"
+            ]
+    elevation_history = pressure_data["elevation_history"]
+    _mask = (elevation_history["until"] + pd.Timedelta(days=1) > _date) & (
+        elevation_history["from"] <= _date
+    )
+    elevation_history = elevation_history.loc[_mask]
+    if device_history is None or len(device_history) == 0:
+        _device = elevation_history.iloc[0]
+    else:
+        _device = device_history.iloc[0]
     combined_data.rename(
         columns={
             "P": "pressure",
@@ -219,31 +292,32 @@ def get_nearest_hourly_data(
     )
     combined_data.set_index("MESS_DATUM", inplace=True)
     combined_data.drop(columns=["QN_8", "QN_9"], inplace=True)
+    # remove rows with invalid/empty data points
+    combined_data = combined_data[combined_data["station_pressure"] != -999]
     if bounds_minutes is not None:
-        if isinstance(date, int):
-            _date = dt.datetime.utcfromtimestamp(date)
-        else:
-            _date = pd.to_datetime(date)
+        # limit output to the given bounds
         _bounds = dt.timedelta(minutes=bounds_minutes)
         _start = _date - _bounds
         _stop = _date + _bounds
-        mask = (combined_data.index >= _start) & (combined_data.index < _stop)
-        combined_data = combined_data.loc[mask]
+        _mask = (combined_data.index >= _start) & (combined_data.index < _stop)
+    else:
+        # limit output to data from the same device
+        _mask = (combined_data.index >= _device["from"]) & (
+            combined_data.index < _device["until"] + pd.Timedelta(days=1)
+        )
+    combined_data = combined_data.loc[_mask]
     if as_dataframe:
         data = combined_data
     else:
         data = combined_data.to_dict("records")
-        elevation_history[["from_date", "until_date"]] = elevation_history[
-            ["from_date", "until_date"]
-        ].astype(str)
-        elevation_history = elevation_history.to_dict("records")
-    if len(elevation_history) > 1:
-        logging.warning("Station elevation differs during selected time range.")
+    _device = _device.to_dict()
+    _device["from"] = _device["from"].strftime("%Y%m%d")  #
+    _device["until"] = _device["until"].strftime("%Y%m%d")
+    nearest_station.update(_device)
     return {
         "category": hourly_stations["category"],
         "station": nearest_station,
         "data": data,
-        "elevation_history": elevation_history,
     }
 
 
