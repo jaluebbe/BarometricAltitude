@@ -10,6 +10,7 @@ import arrow
 import pygeodesy.ellipsoidalVincenty as eV
 from barometric_altitude.timeit import timeit
 import pandas as pd
+from pydantic import constr
 
 # logging.basicConfig(level="INFO")
 
@@ -222,6 +223,7 @@ def get_hourly_stations(date, lat: float = None, lon: float = None):
 @timeit
 def get_hourly_data(
     station: dict,
+    category: constr(regex=r"^(historical|recent)$"),
     date,
     as_dataframe: bool = False,
     bounds_minutes: float = None,
@@ -301,8 +303,8 @@ def get_hourly_data(
     _device["until"] = _device["until"].strftime("%Y%m%d")
     station.update(_device)
     return {
-        "category": hourly_stations["category"],
         "station": station,
+        "category": category,
         "data": data,
     }
 
@@ -332,8 +334,11 @@ def get_nearest_hourly_data(
     if len(hourly_stations) == 0:
         logging.warning("no suitable stations found.")
         return None
-    nearest_station = hourly_stations["stations"][0]
-    return get_hourly_data(nearest_station, date, as_dataframe, bounds_minutes)
+    station = hourly_stations["stations"][0]
+    category = hourly_stations["category"]
+    return get_hourly_data(
+        station, category, date, as_dataframe, bounds_minutes
+    )
 
 
 if __name__ == "__main__":
