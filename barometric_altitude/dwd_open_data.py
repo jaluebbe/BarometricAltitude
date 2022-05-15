@@ -567,7 +567,12 @@ def get_ten_minutes_data(
     combined_data.set_index("MESS_DATUM", inplace=True)
     combined_data.drop(columns=["TM5_10", "TD_10"], inplace=True)
     # remove rows with invalid/empty data points
-    combined_data = combined_data[combined_data["station_pressure"] != -999]
+    _columns = ["station_pressure", "temperature", "humidity"]
+    combined_data.loc[:, _columns] = combined_data.loc[:, _columns].replace(
+        -999, float("NaN")
+    )
+    combined_data.dropna(subset=_columns, inplace=True)
+
     if bounds_minutes is not None:
         # limit output to the given bounds
         _bounds = dt.timedelta(minutes=bounds_minutes)
