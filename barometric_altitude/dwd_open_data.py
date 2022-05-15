@@ -442,6 +442,11 @@ def get_hourly_data(
             rh_percent=combined_data["humidity"],
         )
         combined_data.qfe = combined_data.qfe.round(2)
+        station["pressure_offset"] = (
+            (combined_data.qfe - combined_data.station_pressure)
+            .median()
+            .round(2)
+        )
     else:
         combined_data.drop(columns=["pressure"], inplace=True)
     if as_dataframe:
