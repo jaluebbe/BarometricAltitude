@@ -6,11 +6,13 @@ import io
 import zipfile
 import datetime as dt
 from operator import itemgetter
+import scipy.constants
 import arrow
-import pygeodesy.ellipsoidalVincenty as eV
-from barometric_altitude.timeit import timeit
 import pandas as pd
 from pydantic import constr
+import pygeodesy.ellipsoidalVincenty as eV
+from barometric_altitude.timeit import timeit
+import barometric_altitude as ba
 
 # logging.basicConfig(level="INFO")
 
@@ -417,14 +419,29 @@ def get_hourly_data(
             combined_data.index < _device["until"] + pd.Timedelta(days=1)
         )
     combined_data = combined_data.loc[_mask]
-    if as_dataframe:
-        data = combined_data
-    else:
-        data = combined_data.to_dict("records")
     _device = _device.to_dict()
     _device["from"] = _device["from"].strftime("%Y%m%d")  #
     _device["until"] = _device["until"].strftime("%Y%m%d")
     station.update(_device)
+    if combined_data.pressure.max() == -999:
+        combined_data.pressure = float("NaN")
+    else:
+        geopotential_elevation = (
+            station["elevation"]
+            * ba.get_lat_gravity(station["lat"])
+            / scipy.constants.g
+        )
+        combined_data["qfe"] = ba.qfe_from_qff(
+            qff=combined_data["pressure"],
+            h=geopotential_elevation,
+            t_celsius=combined_data["temperature"],
+            rh_percent=combined_data["humidity"],
+        )
+        combined_data.qfe = combined_data.qfe.round(2)
+    if as_dataframe:
+        data = combined_data
+    else:
+        data = combined_data.to_dict("records")
     return {
         "station": station,
         "category": category,
@@ -557,14 +574,14 @@ def get_ten_minutes_data(
             combined_data.index < _device["until"] + pd.Timedelta(days=1)
         )
     combined_data = combined_data.loc[_mask]
-    if as_dataframe:
-        data = combined_data
-    else:
-        data = combined_data.to_dict("records")
     _device = _device.to_dict()
     _device["from"] = _device["from"].strftime("%Y%m%d")  #
     _device["until"] = _device["until"].strftime("%Y%m%d")
     station.update(_device)
+    if as_dataframe:
+        data = combined_data
+    else:
+        data = combined_data.to_dict("records")
     return {
         "station": station,
         "category": category,
