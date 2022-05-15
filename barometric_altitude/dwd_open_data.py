@@ -406,7 +406,13 @@ def get_hourly_data(
     combined_data.set_index("MESS_DATUM", inplace=True)
     combined_data.drop(columns=["QN_8", "QN_9"], inplace=True)
     # remove rows with invalid/empty data points
-    combined_data = combined_data[combined_data["station_pressure"] != -999]
+    _columns = ["station_pressure", "pressure", "temperature", "humidity"]
+    combined_data.loc[:, _columns] = combined_data.loc[:, _columns].replace(
+        -999, float("NaN")
+    )
+    combined_data.dropna(
+        subset=["station_pressure", "temperature", "humidity"], inplace=True
+    )
     if bounds_minutes is not None:
         # limit output to the given bounds
         _bounds = dt.timedelta(minutes=bounds_minutes)
@@ -423,9 +429,7 @@ def get_hourly_data(
     _device["from"] = _device["from"].strftime("%Y%m%d")  #
     _device["until"] = _device["until"].strftime("%Y%m%d")
     station.update(_device)
-    if combined_data.pressure.max() == -999:
-        combined_data.pressure = float("NaN")
-    else:
+    if combined_data.pressure.max() > -999:
         geopotential_elevation = (
             station["elevation"]
             * ba.get_lat_gravity(station["lat"])
@@ -438,6 +442,8 @@ def get_hourly_data(
             rh_percent=combined_data["humidity"],
         )
         combined_data.qfe = combined_data.qfe.round(2)
+    else:
+        combined_data.drop(columns=["pressure"], inplace=True)
     if as_dataframe:
         data = combined_data
     else:
