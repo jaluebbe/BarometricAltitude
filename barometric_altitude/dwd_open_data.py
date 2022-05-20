@@ -14,11 +14,13 @@ import pygeodesy.ellipsoidalVincenty as eV
 from barometric_altitude.timeit import timeit
 import barometric_altitude as ba
 
-# logging.basicConfig(level="INFO")
+logging.basicConfig(level="INFO")
 
 
 class HourlyCatalog:
-    def __init__(self):
+    def __init__(self, ssl_verify=True):
+        self.session = requests.Session()
+        self.session.verify = ssl_verify
         self.url = (
             "https://opendata.dwd.de/climate_environment/CDC/"
             "observations_germany/climate/hourly/"
@@ -38,26 +40,26 @@ class HourlyCatalog:
             "(?:akt|(?:[0-9]{8}_[0-9]{8}_hist)).zip)</a>"
         )
         self.updated = None
-        self.stations = None
+        self.stations = {"recent": None, "historical": None}
         self.pressure = {"recent": None, "historical": None}
         self.temperature = {"recent": None, "historical": None}
 
     @timeit
     def download_catalog(self):
-        _url = f"{self.url}pressure/recent/"
-        stations_response = requests.get(
-            _url + "P0_Stundenwerte_Beschreibung_Stationen.txt"
-        )
-        if not stations_response.status_code == 200:
-            logging.warning("no valid response from server")
-            return None
-        self.stations = [
-            _x.groupdict()
-            for _x in self.station_re.finditer(stations_response.text)
-        ]
         for category in ("historical", "recent"):
             _url = f"{self.url}pressure/{category}/"
-            pressure_response = requests.get(_url)
+            stations_response = self.session.get(
+                _url + "P0_Stundenwerte_Beschreibung_Stationen.txt"
+            )
+            if not stations_response.status_code == 200:
+                logging.warning("no valid response from server")
+                return None
+            self.stations[category] = [
+                _x.groupdict()
+                for _x in self.station_re.finditer(stations_response.text)
+            ]
+            _url = f"{self.url}pressure/{category}/"
+            pressure_response = self.session.get(_url)
             if not pressure_response.status_code == 200:
                 logging.warning("no valid response from server")
                 return None
@@ -66,7 +68,7 @@ class HourlyCatalog:
                 for _x in self.pressure_re.finditer(pressure_response.text)
             }
             _url = f"{self.url}air_temperature/{category}/"
-            temperature_response = requests.get(_url)
+            temperature_response = self.session.get(_url)
             if not temperature_response.status_code == 200:
                 logging.warning("no valid response from server")
                 return None
@@ -104,7 +106,7 @@ class HourlyCatalog:
                 "pressure_file_name": _pressures[_station["station_id"]],
                 "temperature_file_name": _temperatures[_station["station_id"]],
             }
-            for _station in self.stations
+            for _station in self.stations[category]
             if _station["station_id"] in _pressures
             and _station["station_id"] in _temperatures
             and arrow.get(_station["from"]) <= selected_date
@@ -114,7 +116,9 @@ class HourlyCatalog:
 
 
 class TenMinutesCatalog:
-    def __init__(self):
+    def __init__(self, ssl_verify=True):
+        self.session = requests.Session()
+        self.session.verify = ssl_verify
         self.url = (
             "https://opendata.dwd.de/climate_environment/CDC/"
             "observations_germany/climate/10_minutes/air_temperature/"
@@ -145,7 +149,7 @@ class TenMinutesCatalog:
     @timeit
     def download_catalog(self):
         _url = f"{self.url}meta_data/"
-        metadata_response = requests.get(_url)
+        metadata_response = self.session.get(_url)
         if not metadata_response.status_code == 200:
             logging.warning("no valid response from server")
             return None
@@ -160,7 +164,7 @@ class TenMinutesCatalog:
         }
         for _category, _file in catalog_files.items():
             _url = f"{self.url}/{_category}/{_file}"
-            _response = requests.get(_url)
+            _response = self.session.get(_url)
             if not _response.status_code == 200:
                 logging.warning("no valid response from server")
                 return None
@@ -172,7 +176,7 @@ class TenMinutesCatalog:
                 for _x in self.station_re.finditer(_response.text)
             ]
             _url = f"{self.url}{_category}/"
-            temperature_response = requests.get(_url)
+            temperature_response = self.session.get(_url)
             if not temperature_response.status_code == 200:
                 logging.warning("no valid response from server")
                 return None
@@ -235,10 +239,12 @@ class TenMinutesCatalog:
         return {"stations": available_stations, "category": category}
 
 
-_hourly_catalog = HourlyCatalog()
-_ten_minutes_catalog = TenMinutesCatalog()
-_session = requests.Session()
+# You may disable SSL verification to circumvent problems.
+verify_ssl = True
+_hourly_catalog = HourlyCatalog(verify_ssl)
+_ten_minutes_catalog = TenMinutesCatalog(verify_ssl)
 _session = CachedSession("dwd_data", expire_after=dt.timedelta(hours=8))
+_session.verify = verify_ssl
 
 
 @timeit
