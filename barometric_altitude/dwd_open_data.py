@@ -10,11 +10,55 @@ import scipy.constants
 import arrow
 import pandas as pd
 from pydantic import constr
+from typing import Optional
+import sqlmodel
 import pygeodesy.ellipsoidalVincenty as eV
 from barometric_altitude.timeit import timeit
 import barometric_altitude as ba
 
 logging.basicConfig(level="INFO")
+
+
+class dwd_stations(sqlmodel.SQLModel, table=True):
+    station_id: int = sqlmodel.Field(primary_key=True)
+    valid_from: str = sqlmodel.Field(primary_key=True)
+    valid_until: Optional[str] = None
+    pressure_offset: float
+
+
+def get_dwd_station(station):
+    with sqlmodel.Session(_engine) as sql_session:
+        return sql_session.exec(
+            sqlmodel.select(dwd_stations).where(
+                dwd_stations.station_id == station["station_id"],
+                dwd_stations.valid_from == station["from"],
+            )
+        ).first()
+
+
+def update_dwd_station(station):
+    with sqlmodel.Session(_engine) as sql_session:
+        result = sql_session.exec(
+            sqlmodel.select(dwd_stations).where(
+                dwd_stations.station_id == station["station_id"],
+                dwd_stations.valid_from == station["from"],
+            )
+        ).first()
+        if result is None:
+            sql_session.add(
+                dwd_stations(
+                    station_id=station["station_id"],
+                    valid_from=station["from"],
+                    valid_until=station["until"],
+                    pressure_offset=station["pressure_offset"],
+                )
+            )
+            sql_session.commit()
+        elif result.valid_until != station["until"]:
+            result.valid_until = station["until"]
+            result.pressure_offset = station["pressure_offset"]
+            sql_session.add(result)
+            sql_session.commit()
 
 
 class HourlyCatalog:
@@ -234,7 +278,10 @@ class TenMinutesCatalog:
             for _station in self.stations[category]
             if _station["station_id"] in _temperatures
             and arrow.get(_station["from"]) <= selected_date
-            and arrow.get(_station["until"]) >= selected_date.floor("day")
+            and (
+                category == "now"
+                or arrow.get(_station["until"]) >= selected_date.floor("day")
+            )
         ]
         return {"stations": available_stations, "category": category}
 
@@ -245,6 +292,8 @@ _hourly_catalog = HourlyCatalog(verify_ssl)
 _ten_minutes_catalog = TenMinutesCatalog(verify_ssl)
 _session = CachedSession("dwd_data", expire_after=dt.timedelta(hours=8))
 _session.verify = verify_ssl
+_engine = sqlmodel.create_engine("sqlite:///dwd_stations.sqlite")
+sqlmodel.SQLModel.metadata.create_all(_engine)
 
 
 @timeit
@@ -323,7 +372,12 @@ def unpack_zipped_data(my_file, file_name_prefix: str):
 
 @timeit
 def unpack_zipped_data_from_url(url: str, file_name_prefix: str):
-    response = _session.get(url)
+    if "now" in url:
+        # This data seems to be refreshed every 30 minutes on the server.
+        # We should not wait 8 hours for fresh data.
+        response = _session.get(url, expire_after=dt.timedelta(minutes=10))
+    else:
+        response = _session.get(url)
     if not response.status_code == 200:
         logging.warning("no data downloaded.")
         return None
@@ -459,6 +513,7 @@ def get_hourly_data(
         data = combined_data
     else:
         data = combined_data.to_dict("records")
+    update_dwd_station(station)
     return {
         "station": station,
         "category": category,
@@ -583,7 +638,6 @@ def get_ten_minutes_data(
         -999, float("NaN")
     )
     combined_data.dropna(subset=_columns, inplace=True)
-
     if bounds_minutes is not None:
         # limit output to the given bounds
         _bounds = dt.timedelta(minutes=bounds_minutes)
@@ -600,6 +654,22 @@ def get_ten_minutes_data(
     _device["from"] = _device["from"].strftime("%Y%m%d")  #
     _device["until"] = _device["until"].strftime("%Y%m%d")
     station.update(_device)
+    _result = get_dwd_station(station)
+    if _result is not None:
+        combined_data["qfe"] = (
+            combined_data.station_pressure + _result.pressure_offset
+        )
+    else:
+        _hourly = get_nearest_hourly_data(
+            int(combined_data.utc.min()), station["lat"], station["lon"], True
+        )["station"]
+        if (
+            int(_hourly["station_id"]) == station["station_id"]
+            and _hourly.get("pressure_offset") is not None
+        ):
+            combined_data["qfe"] = (
+                combined_data.station_pressure + _hourly["pressure_offset"]
+            )
     if as_dataframe:
         data = combined_data
     else:
