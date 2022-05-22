@@ -16,7 +16,7 @@ import pygeodesy.ellipsoidalVincenty as eV
 from barometric_altitude.timeit import timeit
 import barometric_altitude as ba
 
-logging.basicConfig(level="INFO")
+# logging.basicConfig(level="INFO")
 
 
 class dwd_stations(sqlmodel.SQLModel, table=True):
