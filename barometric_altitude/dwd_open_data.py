@@ -329,8 +329,8 @@ def unpack_zipped_data(my_file, file_name_prefix: str):
                 },
                 inplace=True,
             )
-            df["until"].replace(
-                {pd.NaT: dt.datetime.now().replace(microsecond=0)}, inplace=True
+            df["until"] = df["until"].replace(
+                {pd.NaT: dt.datetime.now().replace(microsecond=0)}
             )
             response["elevation_history"] = df
         elif file_name.startswith("Metadaten_Geraete_Luftdruck_"):
@@ -408,7 +408,7 @@ def get_hourly_stations(date, lat: float = None, lon: float = None):
 @timeit
 def get_hourly_data(
     station: dict,
-    category: constr(regex=r"^(historical|recent)$"),
+    category: constr(pattern=r"^(historical|recent)$"),
     date,
     as_dataframe: bool = False,
     bounds_minutes: float = None,
@@ -431,7 +431,7 @@ def get_hourly_data(
         .astype(int)
     )
     if isinstance(date, int):
-        _date = dt.datetime.utcfromtimestamp(date)
+        _date = pd.to_datetime(date, unit="s")
     else:
         _date = pd.to_datetime(date)
     device_history = pressure_data.get("device_history")
@@ -577,7 +577,7 @@ def get_ten_minutes_stations(date, lat: float = None, lon: float = None):
 @timeit
 def get_ten_minutes_data(
     station: dict,
-    category: constr(regex=r"^(historical|recent|now)$"),
+    category: constr(pattern=r"^(historical|recent|now)$"),
     date,
     as_dataframe: bool = False,
     bounds_minutes: float = None,
