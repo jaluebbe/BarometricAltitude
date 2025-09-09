@@ -1,0 +1,9 @@
+requests
+requests-cache
+arrow
+numpy
+scipy
+pandas
+pydantic
+sqlmodel
+PyGeodesy
