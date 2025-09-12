@@ -555,7 +555,7 @@ def get_nearest_hourly_data(
     :return: dict
     """
     hourly_stations = get_hourly_stations(date, lat, lon)
-    if len(hourly_stations) == 0:
+    if len(hourly_stations["stations"]) == 0:
         logging.warning("no suitable stations found.")
         return None
     station = hourly_stations["stations"][0]
@@ -715,7 +715,7 @@ def get_nearest_ten_minutes_data(
     :return: dict
     """
     ten_minutes_stations = get_ten_minutes_stations(date, lat, lon)
-    if len(ten_minutes_stations) == 0:
+    if len(ten_minutes_stations["stations"]) == 0:
         logging.warning("no suitable stations found.")
         return None
     station = ten_minutes_stations["stations"][0]
