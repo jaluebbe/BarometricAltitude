@@ -9,7 +9,6 @@ from operator import itemgetter
 import scipy.constants
 import arrow
 import pandas as pd
-from pydantic import constr
 from typing import Optional
 import sqlmodel
 import pygeodesy.ellipsoidalVincenty as eV
@@ -70,10 +69,15 @@ class HourlyCatalog:
             "observations_germany/climate/hourly/"
         )
         self.station_re = re.compile(
-            "(?P<station_id>[0-9]{5}) (?P<from>[0-9]{8}) (?P<until>[0-9]{8})"
-            "\\s+(?P<elevation>-?[0-9]{1,4})\\s+(?P<lat>[45][0-9]\\.[0-9]{4})"
-            "\\s+(?P<lon>[1]?[0-9]\\.[0-9]{4})\\s+(?P<station_name>[A-ZÄ-Ü].*"
-            "\\S)\\s+(?P<state>[A-Z].*\\S)"
+            r"^(?P<station_id>\d{5})\s"
+            r"(?P<from>\d{8})\s"
+            r"(?P<until>\d{8})\s+"
+            r"(?P<elevation>-?\d+)\s+"
+            r"(?P<lat>\d{2}\.\d{4})\s+"
+            r"(?P<lon>-?\d{1,2}\.\d{4})\s+"
+            r"(?P<station_name>.+?)\s{3,}"
+            r"(?P<state>.+?)"
+            r"(?:\s{3,}Frei)?$"
         )
         self.pressure_re = re.compile(
             "(?P<file_name>stundenwerte_P0_(?P<station_id>[0-9]{5})_"
@@ -99,8 +103,9 @@ class HourlyCatalog:
                 logging.warning("no valid response from server")
                 return None
             self.stations[category] = [
-                _x.groupdict()
-                for _x in self.station_re.finditer(stations_response.text)
+                _match.groupdict()
+                for _line in stations_response.text.splitlines()
+                if (_match := self.station_re.match(_line.rstrip()))
             ]
             _url = f"{self.url}pressure/{category}/"
             pressure_response = self.session.get(_url)
@@ -168,10 +173,15 @@ class TenMinutesCatalog:
             "observations_germany/climate/10_minutes/air_temperature/"
         )
         self.station_re = re.compile(
-            "(?P<station_id>[0-9]{5}) (?P<from>[0-9]{8}) (?P<until>[0-9]{8})"
-            "\\s+(?P<elevation>-?[0-9]{1,4})\\s+(?P<lat>[45][0-9]\\.[0-9]{4})"
-            "\\s+(?P<lon>[1]?[0-9]\\.[0-9]{4})\\s+(?P<station_name>[A-ZÄ-Ü].*"
-            "\\S)\\s+(?P<state>[A-Z].*\\S)"
+            r"^(?P<station_id>\d{5})\s"
+            r"(?P<from>\d{8})\s"
+            r"(?P<until>\d{8})\s+"
+            r"(?P<elevation>-?\d+)\s+"
+            r"(?P<lat>\d{2}\.\d{4})\s+"
+            r"(?P<lon>-?\d{1,2}\.\d{4})\s+"
+            r"(?P<station_name>.+?)\s{3,}"
+            r"(?P<state>.+?)"
+            r"(?:\s{3,}Frei)?$"
         )
         self.temperature_re = re.compile(
             "(?P<file_name>10minutenwerte_TU_(?P<station_id>[0-9]{5})_"
@@ -214,10 +224,12 @@ class TenMinutesCatalog:
                 return None
             self.stations[_category] = [
                 {
-                    **_x.groupdict(),
-                    "metadata_file_name": self.metadata[_x["station_id"]],
+                    **_match.groupdict(),
+                    "metadata_file_name": self.metadata[_match["station_id"]],
                 }
-                for _x in self.station_re.finditer(_response.text)
+                for _line in _response.text.splitlines()
+                if (_match := self.station_re.match(_line.rstrip()))
+                and _match["station_id"] in self.metadata
             ]
             _url = f"{self.url}{_category}/"
             temperature_response = self.session.get(_url)
@@ -408,7 +420,7 @@ def get_hourly_stations(date, lat: float = None, lon: float = None):
 @timeit
 def get_hourly_data(
     station: dict,
-    category: constr(pattern=r"^(historical|recent)$"),
+    category: str,  # historical|recent
     date,
     as_dataframe: bool = False,
     bounds_minutes: float = None,
@@ -577,7 +589,7 @@ def get_ten_minutes_stations(date, lat: float = None, lon: float = None):
 @timeit
 def get_ten_minutes_data(
     station: dict,
-    category: constr(pattern=r"^(historical|recent|now)$"),
+    category: str,  # historical|recent|now
     date,
     as_dataframe: bool = False,
     bounds_minutes: float = None,
@@ -649,7 +661,7 @@ def get_ten_minutes_data(
         _mask = (combined_data.index >= _device["from"]) & (
             combined_data.index < _device["until"] + pd.Timedelta(days=1)
         )
-    combined_data = combined_data.loc[_mask]
+    combined_data = combined_data.loc[_mask].copy()
     _device = _device.to_dict()
     _device["from"] = _device["from"].strftime("%Y%m%d")  #
     _device["until"] = _device["until"].strftime("%Y%m%d")
@@ -747,4 +759,22 @@ if __name__ == "__main__":
         bounds_minutes=30,
     )
     print(f"downloaded nearest hourly data for {data['station']}.")
+    print(f"target entry: {data['data']}")
+    data = get_nearest_hourly_data(
+        date="20250804T1849",
+        lat=52.52,
+        lon=7.30,
+        as_dataframe=False,
+        bounds_minutes=30,
+    )
+    print(f"downloaded nearest hourly data for {data['station']}.")
+    print(f"target entry: {data['data']}")
+    data = get_nearest_ten_minutes_data(
+        date="20250804T1849",
+        lat=52.52,
+        lon=7.30,
+        as_dataframe=False,
+        bounds_minutes=30,
+    )
+    print(f"downloaded nearest ten_minutes data for {data['station']}.")
     print(f"target entry: {data['data']}")
